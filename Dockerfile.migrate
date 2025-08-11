@@ -1,0 +1,62 @@
+# Multi-stage build for migration tool
+FROM golang:1.23-alpine AS builder
+
+# Install dependencies
+RUN apk add --no-cache git ca-certificates tzdata
+
+# Set working directory
+WORKDIR /build
+
+# Copy go.mod and go.sum first for better caching
+COPY go.mod go.sum ./
+
+# Download dependencies
+RUN go mod download
+
+# Copy source code
+COPY . .
+
+# Build the migration binary with optimizations
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+    -a -installsuffix cgo \
+    -ldflags='-w -s -extldflags "-static"' \
+    -o migrate ./cmd/migrate
+
+# Final stage - minimal runtime image
+FROM alpine:3.19
+
+# Install ca-certificates for SSL/TLS
+RUN apk --no-cache add ca-certificates tzdata
+
+# Create non-root user for security
+RUN addgroup -g 1001 -S appgroup && \
+    adduser -u 1001 -S appuser -G appgroup
+
+# Set working directory
+WORKDIR /app
+
+# Copy the binary from builder stage
+COPY --from=builder /build/migrate /app/migrate
+
+# Create migrations directory
+RUN mkdir -p /app/migrations
+
+# Change ownership to non-root user
+RUN chown -R appuser:appgroup /app
+
+# Switch to non-root user
+USER appuser
+
+# Set environment variables
+ENV APP_ENVIRONMENT=production
+ENV PATH="/app:${PATH}"
+
+# Default command (can be overridden)
+ENTRYPOINT ["/app/migrate"]
+CMD ["-cmd=status"]
+
+# Add labels for better maintainability
+LABEL org.opencontainers.image.title="Ad Processing Migration Tool"
+LABEL org.opencontainers.image.description="Goose-based database migration tool for ad processing system"
+LABEL org.opencontainers.image.vendor="Ad Processing Team"
+LABEL org.opencontainers.image.source="https://github.com/personal/home-work-ad-process"

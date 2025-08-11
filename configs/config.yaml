@@ -1,0 +1,52 @@
+environment: "{APP_ENVIRONMENT-development}"
+log_level: "{APP_LOG_LEVEL-info}"
+
+server:
+  port: "{APP_SERVER_PORT-8080}"
+  read_timeout_seconds: "{APP_SERVER_READ_TIMEOUT-30}"
+  write_timeout_seconds: "{APP_SERVER_WRITE_TIMEOUT-30}"
+  idle_timeout_seconds: "{APP_SERVER_IDLE_TIMEOUT-120}"
+
+database:
+  host: "{APP_DATABASE_HOST-localhost}"
+  port: "{APP_DATABASE_PORT-5432}"
+  user: "{APP_DATABASE_USER-postgres}"
+  password: "{APP_DATABASE_PASSWORD-}"
+  name: "{APP_DATABASE_NAME-adprocessing}"
+  ssl_mode: "{APP_DATABASE_SSLMODE-disable}"
+  max_open_conns: "{APP_DATABASE_MAX_OPEN_CONNS-25}"
+  max_idle_conns: "{APP_DATABASE_MAX_IDLE_CONNS-25}"
+  conn_max_lifetime_minutes: "{APP_DATABASE_CONN_MAX_LIFETIME-5}"
+
+redis:
+  host: "{APP_REDIS_HOST-localhost}"
+  port: "{APP_REDIS_PORT-6379}"
+  password: "{APP_REDIS_PASSWORD-}"
+  db: "{APP_REDIS_DB-0}"
+  pool_size: "{APP_REDIS_POOL_SIZE-10}"
+  read_timeout_seconds: "{APP_REDIS_READ_TIMEOUT-3}"
+  write_timeout_seconds: "{APP_REDIS_WRITE_TIMEOUT-3}"
+  idle_timeout_seconds: "{APP_REDIS_IDLE_TIMEOUT-300}"
+
+queue:
+  anti_starvation_enabled: "{APP_QUEUE_ANTI_STARVATION-true}"
+  max_wait_time_seconds: "{APP_QUEUE_MAX_WAIT_TIME-300}"
+  worker_count: "{APP_QUEUE_WORKER_COUNT-3}"
+  batch_size: "{APP_QUEUE_BATCH_SIZE-10}"
+  processing_timeout_seconds: "{APP_QUEUE_PROCESSING_TIMEOUT-30}"
+  shard_count: "{APP_QUEUE_SHARD_COUNT-4}"
+
+ai:
+  gemini_api_key: "{GOOGLE_AI_API_KEY-}"
+  cache_enabled: "{APP_AI_CACHE_ENABLED-true}"
+  cache_ttl_seconds: "{APP_AI_CACHE_TTL-3600}"
+  timeout_seconds: "{APP_AI_TIMEOUT-30}"
+  max_retries: "{APP_AI_MAX_RETRIES-3}"
+
+kafka:
+  brokers:
+    - "{APP_KAFKA_BROKER_1-localhost:9092}"
+  producer_batch_size: "{APP_KAFKA_PRODUCER_BATCH_SIZE-100}"
+  producer_flush_ms: "{APP_KAFKA_PRODUCER_FLUSH_MS-100}"
+  consumer_group_id: "{APP_KAFKA_CONSUMER_GROUP_ID-ad-processing}"
+  consumer_auto_offset: "{APP_KAFKA_CONSUMER_AUTO_OFFSET-latest}"

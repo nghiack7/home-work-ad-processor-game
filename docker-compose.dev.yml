@@ -1,0 +1,134 @@
+# Development Docker Compose - Simplified (No Kafka)
+networks:
+  app-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: adprocessing
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres123}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d adprocessing"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --requirepass ${REDIS_PASSWORD:-redis123} --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # Database Migration Service
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile.migrate
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      APP_ENVIRONMENT: development
+      APP_DATABASE_HOST: postgres
+      APP_DATABASE_PORT: 5432
+      APP_DATABASE_USER: postgres
+      APP_DATABASE_PASSWORD: ${DB_PASSWORD:-postgres123}
+      APP_DATABASE_NAME: adprocessing
+      APP_DATABASE_SSLMODE: disable
+      DATABASE_URL: postgres://postgres:${DB_PASSWORD:-postgres123}@postgres:5432/adprocessing?sslmode=disable
+    volumes:
+      - ./migrations:/app/migrations:ro
+    networks:
+      - app-network
+    command: ["-cmd=up", "-v"]
+    restart: "no"  # Run once and exit
+
+  # Ad API Service
+  ad-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: ad-api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      APP_ENV: development
+      APP_DATABASE_HOST: postgres
+      APP_DATABASE_PORT: 5432
+      APP_DATABASE_USER: postgres
+      APP_DATABASE_PASSWORD: ${DB_PASSWORD:-postgres123}
+      APP_DATABASE_NAME: adprocessing
+      APP_DATABASE_SSLMODE: disable
+      APP_REDIS_HOST: redis
+      APP_REDIS_PORT: 6379
+      APP_REDIS_PASSWORD: ${REDIS_PASSWORD:-redis123}
+      APP_REDIS_DB: 0
+      GOOGLE_AI_API_KEY: ${GOOGLE_AI_API_KEY:-}
+      JWT_SECRET: ${JWT_SECRET:-dev_secret_key_123}
+    ports:
+      - "8080:8080"  # Development port
+    networks:
+      - app-network
+
+  # Ad Processor Service
+  ad-processor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: ad-processor
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      APP_ENV: development
+      APP_DATABASE_HOST: postgres
+      APP_DATABASE_PORT: 5432
+      APP_DATABASE_USER: postgres
+      APP_DATABASE_PASSWORD: ${DB_PASSWORD:-postgres123}
+      APP_DATABASE_NAME: adprocessing
+      APP_DATABASE_SSLMODE: disable
+      APP_REDIS_HOST: redis
+      APP_REDIS_PORT: 6379
+      APP_REDIS_PASSWORD: ${REDIS_PASSWORD:-redis123}
+      APP_REDIS_DB: 0
+    networks:
+      - app-network

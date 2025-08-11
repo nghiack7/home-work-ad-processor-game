@@ -1,0 +1,9 @@
+.env
+tests/
+
+k8s/
+logs/
+bin/
+.vscode/
+.claude/
+.cursor/

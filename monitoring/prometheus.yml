@@ -1,0 +1,100 @@
+# Prometheus Configuration for Ad Processing Queue System
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    monitor: 'ad-processing-monitor'
+    environment: 'production'
+
+# Alertmanager configuration
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+          # - alertmanager:9093
+
+# Load rules once and periodically evaluate them
+rule_files:
+  - "alert_rules.yml"
+
+# Scrape configuration
+scrape_configs:
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+    scrape_interval: 30s
+    metrics_path: /metrics
+
+  # Ad API Service
+  - job_name: 'ad-api'
+    static_configs:
+      - targets: ['ad-api:8443']
+    scrape_interval: 15s
+    metrics_path: /metrics
+    scheme: https
+    tls_config:
+      insecure_skip_verify: true  # Only for development
+    basic_auth:
+      username: 'prometheus'
+      password: 'monitoring_password'
+
+  # Ad Processor Service
+  - job_name: 'ad-processor'
+    static_configs:
+      - targets: ['ad-processor:9091']  # Assuming metrics on separate port
+    scrape_interval: 15s
+    metrics_path: /metrics
+
+  # PostgreSQL metrics (via postgres_exporter)
+  - job_name: 'postgresql'
+    static_configs:
+      - targets: ['postgres-exporter:9187']
+    scrape_interval: 30s
+
+  # Redis metrics (via redis_exporter)
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis-exporter:9121']
+    scrape_interval: 30s
+
+  # Kafka metrics (via kafka_exporter)
+  - job_name: 'kafka'
+    static_configs:
+      - targets: ['kafka-exporter:9308']
+    scrape_interval: 30s
+
+  # NGINX metrics
+  - job_name: 'nginx'
+    static_configs:
+      - targets: ['nginx:9113']  # nginx-prometheus-exporter
+    scrape_interval: 30s
+
+  # Node exporter for system metrics
+  - job_name: 'node-exporter'
+    static_configs:
+      - targets: ['node-exporter:9100']
+    scrape_interval: 30s
+
+  # Custom business metrics from AI agent
+  - job_name: 'ai-agent-metrics'
+    static_configs:
+      - targets: ['ad-api:8443']
+    scrape_interval: 60s  # Less frequent for AI metrics
+    metrics_path: /api/agent/metrics
+    params:
+      format: ['prometheus']
+
+# Remote write configuration (for long-term storage)
+# remote_write:
+#   - url: "https://prometheus-remote-storage.example.com/api/v1/write"
+#     basic_auth:
+#       username: 'remote_user'
+#       password: 'remote_password'
+
+# Remote read configuration
+# remote_read:
+#   - url: "https://prometheus-remote-storage.example.com/api/v1/read"
+#     basic_auth:
+#       username: 'remote_user'
+#       password: 'remote_password'

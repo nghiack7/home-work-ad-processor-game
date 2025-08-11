@@ -1,0 +1,287 @@
+# Prometheus Alert Rules for Ad Processing Queue System
+groups:
+  - name: ad_processing_alerts
+    interval: 30s
+    rules:
+      # High-level service health alerts
+      - alert: ServiceDown
+        expr: up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Service {{ $labels.job }} is down"
+          description: "Service {{ $labels.job }} has been down for more than 1 minute."
+
+      - alert: HighErrorRate
+        expr: rate(http_requests_total{status=~"5.."}[5m]) / rate(http_requests_total[5m]) > 0.1
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High error rate detected"
+          description: "Error rate is {{ $value | humanizePercentage }} for {{ $labels.job }}"
+
+      # Queue-specific alerts
+      - alert: QueueBacklogHigh
+        expr: sum(queue_size) > 10000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Queue backlog is high"
+          description: "Total queue size is {{ $value }}, which exceeds the threshold of 10,000 ads"
+
+      - alert: QueueBacklogCritical
+        expr: sum(queue_size) > 50000
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Queue backlog is critically high"
+          description: "Total queue size is {{ $value }}, system may be overwhelmed"
+
+      - alert: QueueProcessingStopped
+        expr: rate(queue_processing_total[10m]) == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Queue processing has stopped"
+          description: "No ads have been processed from the queue in the last 10 minutes"
+
+      - alert: HighQueueWaitTime
+        expr: histogram_quantile(0.95, rate(queue_wait_time_seconds_bucket[5m])) > 1800
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High queue wait times detected"
+          description: "95th percentile wait time is {{ $value }} seconds (>30 minutes)"
+
+      - alert: PriorityStarvation
+        expr: rate(priority_boosts_total{reason="anti_starvation"}[15m]) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Priority starvation detected"
+          description: "Anti-starvation mechanism is frequently boosting priorities"
+
+      # Worker and processing alerts
+      - alert: LowWorkerUtilization
+        expr: avg(worker_utilization_percent) < 20
+        for: 10m
+        labels:
+          severity: info
+        annotations:
+          summary: "Worker utilization is low"
+          description: "Average worker utilization is {{ $value }}%, consider scaling down"
+
+      - alert: HighWorkerUtilization
+        expr: avg(worker_utilization_percent) > 90
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Worker utilization is high"
+          description: "Average worker utilization is {{ $value }}%, consider scaling up"
+
+      - alert: WorkerDown
+        expr: active_workers < 3
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Not enough active workers"
+          description: "Only {{ $value }} workers are active, minimum required is 3"
+
+      - alert: SlowProcessing
+        expr: histogram_quantile(0.95, rate(ad_processing_duration_seconds_bucket[10m])) > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Ad processing is slow"
+          description: "95th percentile processing time is {{ $value }} seconds"
+
+      # AI Agent alerts
+      - alert: AICommandFailureRate
+        expr: rate(ai_commands_total{status="failed"}[10m]) / rate(ai_commands_total[10m]) > 0.2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High AI command failure rate"
+          description: "AI command failure rate is {{ $value | humanizePercentage }}"
+
+      - alert: AIResponseTimeHigh
+        expr: histogram_quantile(0.95, rate(ai_command_duration_seconds_bucket[10m])) > 30
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "AI response times are high"
+          description: "95th percentile AI response time is {{ $value }} seconds"
+
+      - alert: AIAPICallsFailure
+        expr: rate(ai_api_calls_total{status="error"}[10m]) / rate(ai_api_calls_total[10m]) > 0.1
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: "AI API calls are failing"
+          description: "AI API failure rate is {{ $value | humanizePercentage }}"
+
+      # Database alerts
+      - alert: DatabaseConnectionsHigh
+        expr: database_connections{state="active"} / database_connections{state="max"} > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Database connections are high"
+          description: "Database connection usage is at {{ $value | humanizePercentage }}"
+
+      - alert: DatabaseSlowQueries
+        expr: histogram_quantile(0.95, rate(database_query_duration_seconds_bucket[10m])) > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Database queries are slow"
+          description: "95th percentile database query time is {{ $value }} seconds"
+
+      - alert: DatabaseErrorsHigh
+        expr: rate(database_errors_total[5m]) > 0.1
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High database error rate"
+          description: "Database error rate is {{ $value }} errors per second"
+
+      # Redis alerts
+      - alert: RedisConnectionsHigh
+        expr: redis_connections{state="active"} > 100
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High Redis connections"
+          description: "Redis has {{ $value }} active connections"
+
+      - alert: RedisSlowCommands
+        expr: histogram_quantile(0.95, rate(redis_command_duration_seconds_bucket[10m])) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Redis commands are slow"
+          description: "95th percentile Redis command time is {{ $value }} seconds"
+
+      # System resource alerts
+      - alert: HighMemoryUsage
+        expr: system_resource_usage_percent{resource="memory"} > 85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High memory usage"
+          description: "Memory usage is {{ $value }}% on {{ $labels.service }}"
+
+      - alert: HighCPUUsage
+        expr: system_resource_usage_percent{resource="cpu"} > 80
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High CPU usage"
+          description: "CPU usage is {{ $value }}% on {{ $labels.service }}"
+
+      - alert: DiskSpaceLow
+        expr: system_resource_usage_percent{resource="disk"} > 85
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Disk space is low"
+          description: "Disk usage is {{ $value }}% on {{ $labels.service }}"
+
+      # Business logic alerts
+      - alert: LowAdCreationRate
+        expr: rate(ads_created_total[15m]) < 0.1
+        for: 15m
+        labels:
+          severity: info
+        annotations:
+          summary: "Ad creation rate is low"
+          description: "Only {{ $value }} ads created per second in the last 15 minutes"
+
+      - alert: HighAdFailureRate
+        expr: rate(ads_processed_total{status="failed"}[10m]) / rate(ads_processed_total[10m]) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High ad processing failure rate"
+          description: "Ad processing failure rate is {{ $value | humanizePercentage }}"
+
+      # HTTP-specific alerts
+      - alert: HighResponseTime
+        expr: histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[10m])) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High HTTP response times"
+          description: "95th percentile response time is {{ $value }} seconds for {{ $labels.endpoint }}"
+
+      - alert: HighRequestRate
+        expr: rate(http_requests_total[5m]) > 1000
+        for: 5m
+        labels:
+          severity: info
+        annotations:
+          summary: "High request rate"
+          description: "Request rate is {{ $value }} requests/second"
+
+  - name: infrastructure_alerts
+    interval: 60s
+    rules:
+      # Infrastructure health
+      - alert: PostgreSQLDown
+        expr: up{job="postgresql"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "PostgreSQL is down"
+          description: "PostgreSQL database is not responding"
+
+      - alert: RedisDown
+        expr: up{job="redis"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Redis is down"
+          description: "Redis cache/queue is not responding"
+
+      - alert: KafkaDown
+        expr: up{job="kafka"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Kafka is down"
+          description: "Kafka message broker is not responding"
+
+      - alert: PrometheusTargetDown
+        expr: up == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Prometheus target down"
+          description: "Prometheus target {{ $labels.job }} has been down for more than 5 minutes"

@@ -1,0 +1,442 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main, develop]
+    tags: ['v*']
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+    inputs:
+      deploy_environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+        - staging
+        - production
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  # ===========================
+  # TESTING AND LINTING
+  # ===========================
+  test:
+    name: Test & Lint
+    runs-on: ubuntu-latest
+    
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_DB: test_adprocessing
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: test123
+          POSTGRES_HOST_AUTH_METHOD: trust
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+      
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.23'
+        cache: true
+        
+    - name: Verify dependencies
+      run: |
+        go mod verify
+        go mod tidy
+        git diff --exit-code go.mod go.sum
+        
+    - name: Run tests
+      env:
+        TEST_DATABASE_URL: postgres://postgres:test123@localhost:5432/test_adprocessing?sslmode=disable
+        TEST_REDIS_URL: redis://localhost:6379
+      run: |
+        # Run unit tests
+        go test -v -race -coverprofile=coverage.out ./...
+        
+        # Run integration tests
+        go test -v -tags=integration ./tests/integration/...
+        
+        # Generate coverage report
+        go tool cover -html=coverage.out -o coverage.html
+        
+    - name: Upload test coverage
+      uses: codecov/codecov-action@v3
+      with:
+        file: ./coverage.out
+        flags: unittests
+        name: codecov-umbrella
+        
+    - name: Lint code
+      uses: golangci/golangci-lint-action@v3
+      with:
+        version: latest
+        args: --timeout=5m
+        
+    - name: Security scan
+      uses: securecodewarrior/github-action-add-sarif@v1
+      with:
+        sarif-file: 'golangci-lint-report.sarif'
+      continue-on-error: true
+
+  # ===========================
+  # DATABASE MIGRATION TESTING
+  # ===========================
+  migration-test:
+    name: Test Migrations
+    runs-on: ubuntu-latest
+    needs: test
+    
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_DB: migration_test
+          POSTGRES_USER: postgres  
+          POSTGRES_PASSWORD: test123
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.23'
+        cache: true
+        
+    - name: Build migration tool
+      run: |
+        go build -o migrate ./cmd/migrate
+        
+    - name: Test migrations up
+      env:
+        APP_DATABASE_HOST: localhost
+        APP_DATABASE_PORT: 5432
+        APP_DATABASE_USER: postgres
+        APP_DATABASE_PASSWORD: test123
+        APP_DATABASE_NAME: migration_test
+        APP_DATABASE_SSLMODE: disable
+      run: |
+        echo "Testing migration up..."
+        ./migrate -up -v
+        
+        echo "Testing migration status..."
+        ./migrate -status -v
+        
+        echo "Testing migration idempotency..."
+        ./migrate -up -v
+        
+    - name: Verify database schema
+      env:
+        PGPASSWORD: test123
+      run: |
+        echo "Verifying tables exist..."
+        psql -h localhost -U postgres -d migration_test -c "\dt"
+        
+        echo "Verifying functions exist..."
+        psql -h localhost -U postgres -d migration_test -c "\df"
+        
+        echo "Verifying views exist..."
+        psql -h localhost -U postgres -d migration_test -c "\dv"
+
+  # ===========================
+  # BUILD DOCKER IMAGES
+  # ===========================
+  build:
+    name: Build Images
+    runs-on: ubuntu-latest
+    needs: [test, migration-test]
+    if: github.event_name != 'pull_request'
+    
+    outputs:
+      image-tag: ${{ steps.meta.outputs.tags }}
+      image-digest: ${{ steps.build.outputs.digest }}
+    
+    strategy:
+      matrix:
+        service: [ad-api, ad-processor, migrate-tool, ai-agent]
+        
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+      
+    - name: Log in to Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+        
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/${{ matrix.service }}
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr
+          type=semver,pattern={{version}}
+          type=semver,pattern={{major}}.{{minor}}
+          type=sha,prefix={{branch}}-
+          type=raw,value=latest,enable={{is_default_branch}}
+          
+    - name: Build and push Docker image
+      id: build
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: ${{ matrix.service == 'migrate-tool' && 'Dockerfile.migrate' || matrix.service == 'ai-agent' && 'ai-agent/Dockerfile' || format('Dockerfile.{0}', matrix.service) }}
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        platforms: linux/amd64,linux/arm64
+        
+    - name: Generate SBOM
+      uses: anchore/sbom-action@v0
+      with:
+        image: ${{ steps.meta.outputs.tags }}
+        format: spdx-json
+        output-file: "${{ matrix.service }}-sbom.spdx.json"
+        
+    - name: Scan for vulnerabilities
+      uses: anchore/scan-action@v3
+      with:
+        image: ${{ steps.meta.outputs.tags }}
+        fail-build: false
+        severity-cutoff: high
+
+  # ===========================
+  # SECURITY SCANNING
+  # ===========================
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.event_name != 'pull_request'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Run Trivy vulnerability scanner
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: 'fs'
+        scan-ref: '.'
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+        
+    - name: Upload Trivy scan results to GitHub Security tab
+      uses: github/codeql-action/upload-sarif@v2
+      if: always()
+      with:
+        sarif_file: 'trivy-results.sarif'
+
+  # ===========================
+  # STAGING DEPLOYMENT
+  # ===========================
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: [build, security]
+    if: github.ref == 'refs/heads/develop' || (github.event_name == 'workflow_dispatch' && github.event.inputs.deploy_environment == 'staging')
+    environment: staging
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up kubectl
+      uses: azure/setup-kubectl@v3
+      with:
+        version: 'v1.27.3'
+        
+    - name: Configure kubectl for staging
+      run: |
+        # Configure kubectl to connect to staging cluster
+        # This would typically use service account credentials
+        echo "${{ secrets.STAGING_KUBECONFIG }}" | base64 -d > /tmp/kubeconfig
+        export KUBECONFIG=/tmp/kubeconfig
+        kubectl config current-context
+        
+    - name: Deploy to staging
+      env:
+        KUBECONFIG: /tmp/kubeconfig
+        IMAGE_TAG: ${{ github.sha }}
+        ENVIRONMENT: staging
+        GOOGLE_AI_API_KEY: ${{ secrets.STAGING_GOOGLE_AI_API_KEY }}
+      run: |
+        # Apply configurations
+        envsubst < k8s/configmaps.yaml | kubectl apply -f -
+        envsubst < k8s/secrets.yaml | kubectl apply -f -
+        
+        # Run database migrations
+        envsubst < k8s/migration-job.yaml | kubectl apply -f -
+        kubectl wait --for=condition=complete --timeout=300s job/pre-deployment-migration -n ad-processing || {
+          echo "Migration failed. Check logs:"
+          kubectl logs job/pre-deployment-migration -n ad-processing
+          exit 1
+        }
+        
+        # Deploy services
+        envsubst < k8s/postgres.yaml | kubectl apply -f -
+        envsubst < k8s/redis.yaml | kubectl apply -f -
+        
+        # Update image tags and deploy applications
+        sed -i "s|ad-api:latest|${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/ad-api:${GITHUB_SHA:0:7}|g" k8s/ad-api.yaml
+        sed -i "s|ad-processor:latest|${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/ad-processor:${GITHUB_SHA:0:7}|g" k8s/ad-processor.yaml
+        sed -i "s|ai-agent:latest|${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/ai-agent:${GITHUB_SHA:0:7}|g" k8s/ai-agent.yaml
+        
+        kubectl apply -f k8s/ad-api.yaml
+        kubectl apply -f k8s/ad-processor.yaml
+        kubectl apply -f k8s/ai-agent.yaml
+        kubectl apply -f k8s/monitoring.yaml
+        kubectl apply -f k8s/ingress.yaml
+        
+        # Wait for deployments
+        kubectl rollout status deployment/ad-api -n ad-processing --timeout=300s
+        kubectl rollout status deployment/ad-processor -n ad-processing --timeout=300s
+        kubectl rollout status deployment/ai-agent -n ad-processing --timeout=300s
+        
+    - name: Run smoke tests
+      env:
+        KUBECONFIG: /tmp/kubeconfig
+      run: |
+        # Get service URL
+        API_URL=$(kubectl get service ad-api-nodeport -n ad-processing -o jsonpath='{.spec.clusterIP}'):30443
+        
+        # Wait for service to be ready
+        for i in {1..30}; do
+          if curl -f http://$API_URL/health; then
+            echo "Service is ready"
+            break
+          fi
+          echo "Waiting for service... ($i/30)"
+          sleep 10
+        done
+        
+        # Run basic API tests
+        ./scripts/smoke-test.sh $API_URL
+
+  # ===========================
+  # PRODUCTION DEPLOYMENT
+  # ===========================
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [build, security]
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.deploy_environment == 'production')
+    environment: production
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up kubectl
+      uses: azure/setup-kubectl@v3
+      with:
+        version: 'v1.27.3'
+        
+    - name: Configure kubectl for production
+      run: |
+        echo "${{ secrets.PRODUCTION_KUBECONFIG }}" | base64 -d > /tmp/kubeconfig
+        export KUBECONFIG=/tmp/kubeconfig
+        kubectl config current-context
+        
+    - name: Deploy to production
+      env:
+        KUBECONFIG: /tmp/kubeconfig
+        IMAGE_TAG: ${{ github.sha }}
+        ENVIRONMENT: production
+        GOOGLE_AI_API_KEY: ${{ secrets.PRODUCTION_GOOGLE_AI_API_KEY }}
+      run: |
+        # Similar deployment steps as staging but with production configurations
+        # Include additional safety checks for production
+        
+        echo "Deploying to production..."
+        echo "Current deployments:"
+        kubectl get deployments -n ad-processing
+        
+        # Run migrations first
+        envsubst < k8s/migration-job.yaml | kubectl apply -f -
+        kubectl wait --for=condition=complete --timeout=600s job/pre-deployment-migration -n ad-processing
+        
+        # Deploy with rolling updates
+        kubectl apply -f k8s/ --recursive
+        
+        # Verify deployment
+        kubectl rollout status deployment/ad-api -n ad-processing --timeout=600s
+        kubectl rollout status deployment/ad-processor -n ad-processing --timeout=600s
+        
+    - name: Production health check
+      env:
+        KUBECONFIG: /tmp/kubeconfig
+      run: |
+        # Comprehensive health checks for production
+        ./scripts/production-health-check.sh
+
+  # ===========================
+  # NOTIFICATION
+  # ===========================
+  notify:
+    name: Notify
+    runs-on: ubuntu-latest
+    needs: [deploy-staging, deploy-production]
+    if: always()
+    
+    steps:
+    - name: Notify Slack
+      if: needs.deploy-production.result == 'success'
+      uses: 8398a7/action-slack@v3
+      with:
+        status: ${{ job.status }}
+        channel: '#deployments'
+        webhook_url: ${{ secrets.SLACK_WEBHOOK_URL }}
+        text: "🚀 Production deployment successful for ${{ github.ref }}"
+        
+    - name: Notify on failure
+      if: needs.deploy-production.result == 'failure'
+      uses: 8398a7/action-slack@v3
+      with:
+        status: 'failure'
+        channel: '#alerts'
+        webhook_url: ${{ secrets.SLACK_WEBHOOK_URL }}
+        text: "🚨 Production deployment failed for ${{ github.ref }}"
